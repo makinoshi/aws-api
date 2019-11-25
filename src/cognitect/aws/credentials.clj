@@ -12,8 +12,9 @@
             [cognitect.aws.util :as u]
             [cognitect.aws.config :as config]
             [cognitect.aws.ec2-metadata-utils :as ec2])
-  (:import (java.util.concurrent Executors ScheduledExecutorService)
-           (java.util.concurrent TimeUnit ThreadFactory)
+  (:import (java.util.concurrent Executors ScheduledExecutorService
+                                 TimeUnit ThreadFactory
+                                 ScheduledFuture)
            (java.io File)
            (java.net URI)
            (java.time Duration Instant)))
@@ -41,32 +42,40 @@
 (defn ^:skip-wiki auto-refresh-fn
   "For internal use. Don't call directly.
 
-  Return the function to auto-refresh the `credentials` atom using the given `provider`.
+  Returns the function to auto-refresh the `credentials` atom using the given `provider`.
 
-  If the credentials return a ::ttl, schedule refresh after ::ttl seconds using `scheduler`.
+  If the credentials return a ::ttl, schedules a refresh after ::ttl seconds using `scheduler`,
+  sets the `ScheduledFuture` as the value of `scheduled-refresh`.
 
   If the credentials returned by the provider are not valid, an error will be logged and
   the automatic refresh process will stop."
-  [credentials provider scheduler]
+  [credentials scheduled-refresh provider scheduler]
   (fn refresh! []
     (try
       (let [{:keys [::ttl] :as new-creds} (fetch provider)]
         (reset! credentials new-creds)
-        (when ttl
-          (.schedule ^ScheduledExecutorService scheduler
-                     ^Runnable refresh!
-                     ^long ttl
-                     TimeUnit/SECONDS))
+        (reset! scheduled-refresh
+                (when ttl
+                  (.schedule ^ScheduledExecutorService scheduler
+                             ^Runnable refresh!
+                             ^long ttl
+                             TimeUnit/SECONDS)))
         new-creds)
       (catch Throwable t
         (log/error t "Error fetching the credentials.")))))
 
+(def scheduled-executor-service
+  (delay
+   (Executors/newScheduledThreadPool 1 (reify ThreadFactory
+                                         (newThread [_ r]
+                                           (doto (Thread. r)
+                                             (.setName "cognitect.aws-api.credentials.refresh")
+                                             (.setDaemon true)))))))
+
 (defn auto-refreshing-credentials
   "Create auto-refreshing credentials using the specified provider.
 
-  Return a derefable containing the credentials.
-
-  Call `stop` to stop the auto-refreshing process.
+  Call `stop` to cancel future auto-refreshes.
 
   The default ScheduledExecutorService uses a ThreadFactory
   that spawns daemon threads. You can override this by
@@ -74,23 +83,19 @@
 
   Alpha. Subject to change."
   ([provider]
-   (auto-refreshing-credentials
-    provider
-    (Executors/newScheduledThreadPool 1 (reify ThreadFactory
-                                          (newThread [_ r]
-                                            (doto (Thread. r)
-                                              (.setName "cognitect.aws-api.credentials.refresh")
-                                              (.setDaemon true)))))))
+   (auto-refreshing-credentials provider @scheduled-executor-service))
   ([provider scheduler]
-   (let [credentials (atom nil)
-         auto-refresh! (auto-refresh-fn credentials provider scheduler)]
+   (let [credentials   (atom nil)
+         next-refresh  (atom nil)
+         auto-refresh! (auto-refresh-fn credentials next-refresh provider scheduler)]
      (reify
        CredentialsProvider
        (fetch [_] (or @credentials (auto-refresh!)))
        Stoppable
        (-stop [_]
          (-stop provider)
-         (.shutdownNow ^ScheduledExecutorService scheduler))))))
+         (when-let [r @next-refresh]
+           (.cancel ^ScheduledFuture r true)))))))
 
 (defn stop
   "Stop auto-refreshing the credentials.

@@ -150,11 +150,11 @@
                ::credentials/ttl 1}))
         creds (credentials/auto-refreshing-credentials p)]
     (credentials/fetch creds)
-    (Thread/sleep 5000)
+    (Thread/sleep 2500)
     (let [refreshed @cnt]
       (credentials/stop creds)
-      (Thread/sleep 2000)
-      (is (<= 3 refreshed) "The credentials have been refreshed.")
+      (Thread/sleep 1000)
+      (is (= 3 refreshed) "The credentials have been refreshed.")
       (is (= refreshed @cnt) "We stopped the auto-refreshing process."))))
 
 (deftest basic-credentials-provider
