@@ -6,7 +6,6 @@
 
   Alpha. Subject to change."
   (:require [clojure.java.io :as io]
-            [clojure.string :as str]
             [clojure.tools.logging :as log]
             [clojure.core.async :as a]
             [cognitect.aws.util :as u]
@@ -118,18 +117,12 @@
    (valid-credentials credentials nil))
   ([{:keys [aws/access-key-id aws/secret-access-key] :as credentials}
     credential-source]
-   (cond (and (not (str/blank? access-key-id))
-              (not (str/blank? secret-access-key)))
-         credentials
-
-         (or (str/blank? access-key-id) (str/blank? secret-access-key))
-         (do
-           (when-not (nil? credential-source)
-             (log/debug (str "Unable to fetch credentials from " credential-source ".")))
-           nil)
-
-         :else
-         nil)))
+   (if (and (some-> access-key-id not-empty)
+            (some-> secret-access-key not-empty))
+     credentials
+     (when credential-source
+       (log/info (str "Unable to fetch credentials from " credential-source "."))
+       nil))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Providers
