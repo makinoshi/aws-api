@@ -5,16 +5,15 @@
   "Contains credentials providers and helpers for discovering credentials.
 
   Alpha. Subject to change."
-  (:require [clojure.data.json :as json]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
+            [clojure.core.async :as a]
             [cognitect.aws.util :as u]
             [cognitect.aws.config :as config]
             [cognitect.aws.ec2-metadata-utils :as ec2])
-  (:import (java.util.concurrent Executors ScheduledExecutorService
-                                 TimeUnit ThreadFactory
-                                 ScheduledFuture)
+  (:import (java.util.concurrent Executors ExecutorService ScheduledExecutorService
+                                 ScheduledFuture TimeUnit ThreadFactory)
            (java.io File)
            (java.net URI)
            (java.time Duration Instant)))
@@ -325,3 +324,9 @@
     (fetch [_]
       {:aws/access-key-id     access-key-id
        :aws/secret-access-key secret-access-key})))
+
+(defn fetch-async [provider]
+  (let [ch (a/chan 1)]
+    (.submit ^ExecutorService @scheduled-executor-service
+             ^Callable        #(a/put! ch (fetch provider)))
+    ch))

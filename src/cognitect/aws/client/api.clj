@@ -61,20 +61,20 @@
   Alpha. Subject to change."
   [{:keys [api region region-provider retriable? backoff credentials-provider endpoint endpoint-override
            http-client]
-    :or {endpoint-override {}}
-    :as config}]
+    :or   {endpoint-override {}}
+    :as   config}]
   (when (string? endpoint-override)
     (log/warn
      (format
       "DEPRECATION NOTICE: :endpoint-override string is deprecated.\nUse {:endpoint-override {:hostname \"%s\"}} instead."
       endpoint-override)))
-  (let [service   (service/service-description (name api))
+  (let [service     (service/service-description (name api))
         http-client (http/resolve-http-client http-client)
-        region    (keyword
-                   (or region
-                       (region/fetch
-                        (or region-provider
-                            (region/default-region-provider http-client)))))]
+        region      (keyword
+                     (or region
+                         (region/fetch
+                          (or region-provider
+                              (region/default-region-provider http-client)))))]
     (dynaload/load-ns (symbol (str "cognitect.aws.protocols." (get-in service [:metadata :protocol]))))
     (client/->Client
      (atom {'clojure.core.protocols/datafy (fn [c]
@@ -84,18 +84,18 @@
                                                  (update :endpoint select-keys [:hostname :protocols :signatureVersions])
                                                  (update :service select-keys [:metadata])
                                                  (assoc :ops (ops c))))})
-     {:service     service
-      :region      region
-      :endpoint    (if-let [ep (endpoint/resolve (keyword (get-in service [:metadata :endpointPrefix]))
-                                                 (keyword region))]
-                     (merge ep (if (string? endpoint-override)
-                                 {:hostname endpoint-override}
-                                 endpoint-override))
-                     (throw (ex-info "No known endpoint." {:service api :region region})))
-      :retriable?  (or retriable? retry/default-retriable?)
-      :backoff     (or backoff retry/default-backoff)
-      :http-client http-client
-      :credentials (or credentials-provider (credentials/default-credentials-provider http-client))})))
+     {:service              service
+      :region               region
+      :endpoint             (if-let [ep (endpoint/resolve (keyword (get-in service [:metadata :endpointPrefix]))
+                                                          (keyword region))]
+                              (merge ep (if (string? endpoint-override)
+                                          {:hostname endpoint-override}
+                                          endpoint-override))
+                              (throw (ex-info "No known endpoint." {:service api :region region})))
+      :retriable?           (or retriable? retry/default-retriable?)
+      :backoff              (or backoff retry/default-backoff)
+      :http-client          http-client
+      :credentials-provider (or credentials-provider (credentials/default-credentials-provider http-client))})))
 
 (defn default-http-client
   "Create an http-client to share across multiple aws-api clients."
@@ -215,5 +215,5 @@
 
   Alpha. Subject to change."
   [client]
-  (let [{:keys [http-client credentials]} (client/-get-info client)]
+  (let [{:keys [http-client]} (client/-get-info client)]
     (http/-stop http-client)))
