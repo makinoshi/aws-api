@@ -39,6 +39,14 @@
 
 ;; Credentials subsystem
 
+(defonce ^:private scheduled-executor-service
+  (delay
+   (Executors/newScheduledThreadPool 1 (reify ThreadFactory
+                                         (newThread [_ r]
+                                           (doto (Thread. r)
+                                             (.setName "cognitect.aws-api.credentials.refresh")
+                                             (.setDaemon true)))))))
+
 (defn ^:skip-wiki auto-refresh-fn
   "For internal use. Don't call directly.
 
@@ -64,16 +72,11 @@
       (catch Throwable t
         (log/error t "Error fetching the credentials.")))))
 
-(def scheduled-executor-service
-  (delay
-   (Executors/newScheduledThreadPool 1 (reify ThreadFactory
-                                         (newThread [_ r]
-                                           (doto (Thread. r)
-                                             (.setName "cognitect.aws-api.credentials.refresh")
-                                             (.setDaemon true)))))))
-
-(defn auto-refreshing-credentials
-  "Create auto-refreshing credentials using the specified provider.
+(defn cached-credentials-with-auto-refresh
+  "Returns a CredentialsProvider which wraps `provider`, caching
+  credentials returned by `fetch`, and auto-refreshing the cached
+  credentials in a background thread when the credentials include
+  a ::ttl.
 
   Call `stop` to cancel future auto-refreshes.
 
@@ -83,7 +86,7 @@
 
   Alpha. Subject to change."
   ([provider]
-   (auto-refreshing-credentials provider @scheduled-executor-service))
+   (cached-credentials-with-auto-refresh provider @scheduled-executor-service))
   ([provider scheduler]
    (let [credentials   (atom nil)
          next-refresh  (atom nil)
@@ -96,6 +99,11 @@
          (-stop provider)
          (when-let [r @next-refresh]
            (.cancel ^ScheduledFuture r true)))))))
+
+(defn ^{:deprecated true} auto-refreshing-credentials
+  "Deprecated. Use cached-credentials-with-auto-refresh"
+  ([provider] (cached-credentials-with-auto-refresh provider))
+  ([provider scheduler] (cached-credentials-with-auto-refresh provider scheduler)))
 
 (defn stop
   "Stop auto-refreshing the credentials.
@@ -168,13 +176,14 @@
 
   Alpha. Subject to change."
   []
-  (reify CredentialsProvider
-    (fetch [_]
-      (valid-credentials
-       {:aws/access-key-id     (u/getenv "AWS_ACCESS_KEY_ID")
-        :aws/secret-access-key (u/getenv "AWS_SECRET_ACCESS_KEY")
-        :aws/session-token     (u/getenv "AWS_SESSION_TOKEN")}
-       "environment variables"))))
+  (cached-credentials-with-auto-refresh
+   (reify CredentialsProvider
+     (fetch [_]
+       (valid-credentials
+        {:aws/access-key-id     (u/getenv "AWS_ACCESS_KEY_ID")
+         :aws/secret-access-key (u/getenv "AWS_SECRET_ACCESS_KEY")
+         :aws/session-token     (u/getenv "AWS_SESSION_TOKEN")}
+        "environment variables")))))
 
 (defn system-property-credentials-provider
   "Return the credentials from the system properties.
@@ -190,12 +199,13 @@
 
   Alpha. Subject to change. "
   []
-  (reify CredentialsProvider
-    (fetch [_]
-      (valid-credentials
-       {:aws/access-key-id     (u/getProperty "aws.accessKeyId")
-        :aws/secret-access-key (u/getProperty "aws.secretKey")}
-       "system properties"))))
+  (cached-credentials-with-auto-refresh
+   (reify CredentialsProvider
+     (fetch [_]
+       (valid-credentials
+        {:aws/access-key-id     (u/getProperty "aws.accessKeyId")
+         :aws/secret-access-key (u/getProperty "aws.secretKey")}
+        "system properties")))))
 
 (defn profile-credentials-provider
   "Return credentials in an AWS configuration profile.
@@ -221,18 +231,19 @@
    (profile-credentials-provider profile-name (or (io/file (u/getenv "AWS_CREDENTIAL_PROFILES_FILE"))
                                                   (io/file (u/getProperty "user.home") ".aws" "credentials"))))
   ([profile-name ^File f]
-   (reify CredentialsProvider
-     (fetch [_]
-       (when (.exists f)
-         (try
-           (let [profile (get (config/parse f) profile-name)]
-             (valid-credentials
-              {:aws/access-key-id     (get profile "aws_access_key_id")
-               :aws/secret-access-key (get profile "aws_secret_access_key")
-               :aws/session-token     (get profile "aws_session_token")}
-              "aws profiles file"))
-           (catch Throwable t
-             (log/error t "Error fetching credentials from aws profiles file"))))))))
+   (cached-credentials-with-auto-refresh
+    (reify CredentialsProvider
+      (fetch [_]
+        (when (.exists f)
+          (try
+            (let [profile (get (config/parse f) profile-name)]
+              (valid-credentials
+               {:aws/access-key-id     (get profile "aws_access_key_id")
+                :aws/secret-access-key (get profile "aws_secret_access_key")
+                :aws/session-token     (get profile "aws_session_token")}
+               "aws profiles file"))
+            (catch Throwable t
+              (log/error t "Error fetching credentials from aws profiles file")))))))))
 
 (defn ^:skip-wiki calculate-ttl
   "For internal use. Don't call directly."
@@ -251,7 +262,7 @@
 
   Alpha. Subject to change."
   [http-client]
-  (auto-refreshing-credentials
+  (cached-credentials-with-auto-refresh
    (reify CredentialsProvider
      (fetch [_]
        (when-let [creds (ec2/container-credentials http-client)]
@@ -272,7 +283,7 @@
 
   Alpha. Subject to change."
   [http-client]
-  (auto-refreshing-credentials
+  (cached-credentials-with-auto-refresh
    (reify CredentialsProvider
      (fetch [_]
        (when-let [creds (ec2/instance-credentials http-client)]

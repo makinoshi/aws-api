@@ -148,7 +148,7 @@
               {:aws/access-key-id "id"
                :aws/secret-access-key "secret"
                ::credentials/ttl 1}))
-        creds (credentials/auto-refreshing-credentials p)]
+        creds (credentials/cached-credentials-with-auto-refresh p)]
     (credentials/fetch creds)
     (Thread/sleep 2500)
     (let [refreshed @cnt]
