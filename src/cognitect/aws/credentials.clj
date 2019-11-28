@@ -45,57 +45,60 @@
                                              (.setName "cognitect.aws-api.credentials.refresh")
                                              (.setDaemon true)))))))
 
-(defn ^:skip-wiki auto-refresh-fn
+(defn ^:skip-wiki refresh!
   "For internal use. Don't call directly.
 
-  Returns the function to auto-refresh the `credentials` atom using the given `provider`.
+  Invokes `(fetch provider)`, resets the `credentials-atom` with the
+  result and then returns the result.
 
-  If the credentials return a ::ttl, schedules a refresh after ::ttl seconds using `scheduler`,
-  sets the `ScheduledFuture` as the value of `scheduled-refresh`.
+  If the result includes a ::ttl, schedules a refresh after ::ttl
+  seconds using `scheduler`, resetting `scheduled-refresh` with the
+  resulting `ScheduledFuture`.
 
-  If the credentials returned by the provider are not valid, an error will be logged and
-  the automatic refresh process will stop."
-  [credentials scheduled-refresh provider scheduler]
-  (fn refresh! []
-    (try
-      (let [{:keys [::ttl] :as new-creds} (fetch provider)]
-        (reset! credentials new-creds)
-        (reset! scheduled-refresh
-                (when ttl
-                  (.schedule ^ScheduledExecutorService scheduler
-                             ^Runnable refresh!
-                             ^long ttl
-                             TimeUnit/SECONDS)))
-        new-creds)
-      (catch Throwable t
-        (log/error t "Error fetching the credentials.")))))
+  If the credentials returned by the provider are not valid, resets
+  both atoms to nil, logs an error, and returns nil."
+  [credentials-atom scheduled-refresh-atom provider scheduler]
+  (try
+    (let [{:keys [::ttl] :as new-creds} (fetch provider)]
+      (reset! scheduled-refresh-atom
+              (when ttl
+                (.schedule ^ScheduledExecutorService scheduler
+                           ^Runnable #(refresh! credentials-atom scheduled-refresh-atom provider scheduler)
+                           ^long ttl
+                           TimeUnit/SECONDS)))
+      (reset! credentials-atom new-creds))
+    (catch Throwable t
+      (reset! credentials-atom nil)
+      (reset! scheduled-refresh-atom nil)
+      (log/error t "Error fetching credentials."))))
 
 (defn cached-credentials-with-auto-refresh
   "Returns a CredentialsProvider which wraps `provider`, caching
   credentials returned by `fetch`, and auto-refreshing the cached
-  credentials in a background thread when the credentials include
-  a ::ttl.
+  credentials in a background thread when the credentials include a
+  ::ttl.
 
   Call `stop` to cancel future auto-refreshes.
 
-  The default ScheduledExecutorService uses a ThreadFactory
-  that spawns daemon threads. You can override this by
-  providing your own ScheduledExecutorService.
+  The default ScheduledExecutorService uses a ThreadFactory that
+  spawns daemon threads. You can override this by providing your own
+  ScheduledExecutorService.
 
   Alpha. Subject to change."
   ([provider]
    (cached-credentials-with-auto-refresh provider @scheduled-executor-service))
   ([provider scheduler]
-   (let [credentials   (atom nil)
-         next-refresh  (atom nil)
-         auto-refresh! (auto-refresh-fn credentials next-refresh provider scheduler)]
+   (let [credentials-atom       (atom nil)
+         scheduled-refresh-atom (atom nil)]
      (reify
        CredentialsProvider
-       (fetch [_] (or @credentials (auto-refresh!)))
+       (fetch [_]
+         (or @credentials-atom
+             (refresh! credentials-atom scheduled-refresh-atom provider scheduler)))
        Stoppable
        (-stop [_]
          (-stop provider)
-         (when-let [r @next-refresh]
+         (when-let [r @scheduled-refresh-atom]
            (.cancel ^ScheduledFuture r true)))))))
 
 (defn ^{:deprecated true} auto-refreshing-credentials
